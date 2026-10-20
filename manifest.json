@@ -1,6 +1,6 @@
 {
-	"id": "export-to-html",
-	"name": "Export to HTML",
+	"id": "export-to-html-han",
+	"name": "Export to HTML Han",
 	"version": "1.2.0",
 	"minAppVersion": "0.15.0",
 	"description": "Export your Markdown notes as HTML, directly in the clipboard or as a file.",
