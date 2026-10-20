@@ -1,6 +1,12 @@
-import { App, arrayBufferToBase64, Component, MarkdownRenderer, TFile } from 'obsidian';
+import { App, Component, MarkdownRenderer } from 'obsidian';
 
-const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'bmp'];
+const VIDEO_STYLE = 'display:block; width:80%; height:auto; max-width:1920px; max-height:1080px; margin-left:auto; margin-right:auto;';
+
+/** Images which are not wrapped in an embed span are centred on their own. */
+const IMAGE_STYLE = 'display:block; margin-left:auto; margin-right:auto;';
+
+/** Obsidian wraps `![[...]]` embeds in this span, it is the one to turn into a block. */
+const EMBED_WRAPPER_STYLE = 'display:block; text-align:center;';
 
 export default class HtmlRenderer {
   private app: App;
@@ -12,49 +18,22 @@ export default class HtmlRenderer {
   }
 
   /**
-   * Converts an image path to the image in base 64.
-   *
-   * Example of image path: app://80af27eb9c79555ea45e4c97f31cb3fa7726/C:/Users/kalvn/workspace/notes/dev/leon.png?1727120544660
-   * @param imagePath The image path as returned by the MarkdownRenderer.
-   * @returns The base 64 representation of the image.
-   */
-  private async convertImageToBase64String (imagePath: string): Promise<string> {
-    const vault = this.app.vault;
-    const images = vault.getFiles().filter(file => IMAGE_EXTENSIONS.includes(file.extension));
-
-    const fileNameWithTimestamp = imagePath.split('/').at(-1);
-    const fileName = fileNameWithTimestamp?.split('?').at(0);
-    const timestamp = fileNameWithTimestamp?.split('?').at(1);
-
-    let file: TFile | undefined;
-
-    for (const image of images) {
-      if (fileName !== undefined && timestamp !== undefined && image.name === decodeURIComponent(fileName) && image.stat.mtime === parseInt(timestamp)) {
-        file = image;
-        break;
-      }
-    }
-
-    if (file === undefined) {
-      console.error(`Could not find image [${imagePath}]. Skipping.`);
-      return '';
-    }
-
-    const buffer = await vault.adapter.readBinary(decodeURIComponent(file.path));
-    return `data:image/png;base64,${arrayBufferToBase64(buffer)}`;
-  }
-
-  /**
-   * Converts a video source URL as produced by the MarkdownRenderer into an
+   * Converts a media source URL as produced by the MarkdownRenderer into an
    * absolute `file:///` URL, which is what the Markdown source references.
    *
-   * Example of input: app://80af27eb9c79555ea45e4c97f31cb3fa7726/G:\notes\video.mp4?1727120544660
-   * Example of output: file:///G:/notes/video.mp4
+   * Example of input: app://80af27eb9c79555ea45e4c97f31cb3fa7726/G:\notes\media.mp4?1727120544660
+   * Example of output: file:///G:/notes/media.mp4
    * @param src The `src` attribute as returned by the MarkdownRenderer.
-   * @returns An absolute file URL pointing to the local video.
+   * @returns An absolute file URL, or `null` when the source is not a local
+   * file (e.g. an `https://` image) and must be left untouched.
    */
-  private toFileUrl (src: string): string {
+  private toFileUrl (src: string): string | null {
     let path = src.trim();
+
+    // Only local resources are rewritten, remote ones are exported as is.
+    if (!path.startsWith('app://') && !path.startsWith('file://')) {
+      return null;
+    }
 
     // Remove the `app://<vaultId>/` prefix added by Obsidian.
     if (path.startsWith('app://')) {
@@ -82,6 +61,54 @@ export default class HtmlRenderer {
     return `file:///${encodeURI(normalizedPath)}`;
   }
 
+  /**
+   * Appends CSS declarations to an element, keeping the ones Obsidian set
+   * (e.g. the width of `![[image.png|900]]`). Declarations appended last win.
+   * @param element The element to style.
+   * @param style The declarations to append.
+   */
+  private addStyle (element: Element, style: string): void {
+    const currentStyle = element.getAttribute('style');
+
+    if (currentStyle === null || currentStyle.trim() === '') {
+      element.setAttribute('style', style);
+      return;
+    }
+
+    element.setAttribute('style', `${currentStyle.trim().replace(/;$/, '')}; ${style}`);
+  }
+
+  /**
+   * Obsidian wraps `![[...]]` embeds in a span, that wrapper is the element
+   * which has to become a block, otherwise the media stays inline.
+   * @param element The `img` or `video` element produced by the renderer.
+   * @returns The embed wrapper, or `null` when the element is not embedded.
+   */
+  private getEmbedWrapper (element: Element): Element | null {
+    const parent = element.parentElement;
+
+    if (parent !== null && (parent.classList.contains('internal-embed') || parent.classList.contains('media-embed'))) {
+      return parent;
+    }
+
+    return null;
+  }
+
+  /**
+   * Displays an image as a centred block on its own line.
+   * @param image The `img` element to centre.
+   */
+  private centerImage (image: Element): void {
+    const wrapper = this.getEmbedWrapper(image);
+
+    if (wrapper !== null) {
+      this.addStyle(wrapper, EMBED_WRAPPER_STYLE);
+      return;
+    }
+
+    this.addStyle(image, IMAGE_STYLE);
+  }
+
   async render (markdownContent: string): Promise<string> {
     const el = activeDocument.body.createDiv();
     await MarkdownRenderer.render(this.app, markdownContent, el, '.', this.component);
@@ -91,31 +118,26 @@ export default class HtmlRenderer {
       e.remove();
     });
 
-    // Point videos back to their absolute file location instead of the
-    // `app://` URL generated by the MarkdownRenderer.
-    el.querySelectorAll('video, source').forEach(element => {
+    // Point media (images, videos, audio) back to their absolute file
+    // location instead of the `app://` URL generated by the MarkdownRenderer.
+    el.querySelectorAll('img, video, source').forEach(element => {
+      // Videos and images are displayed as centred blocks of their own.
+      if (element.tagName === 'VIDEO') {
+        const wrapper = this.getEmbedWrapper(element);
+        if (wrapper !== null) this.addStyle(wrapper, EMBED_WRAPPER_STYLE);
+
+        this.addStyle(element, VIDEO_STYLE);
+      } else if (element.tagName === 'IMG') {
+        this.centerImage(element);
+      }
+
       const src = element.getAttribute('src');
       if (src === null || src === '') return;
 
-      element.setAttribute('src', this.toFileUrl(src));
-    });
+      const fileUrl = this.toFileUrl(src);
+      if (fileUrl === null) return;
 
-    // Convert images to base 64 strings.
-    el.querySelectorAll('img').forEach(async (img): Promise<void> => {
-      const src = img.src;
-      if (src !== null && src !== undefined) {
-        img.src = await this.convertImageToBase64String(src);
-      }
-    });
-
-    /**
-     * Wait some time to let the browser finish the painting flow.
-     * Explanation: https://macarthur.me/posts/when-dom-updates-appear-to-be-asynchronous/
-     */
-    await new Promise((resolve) => {
-      activeWindow.setTimeout(() => {
-        resolve(null);
-      }, 100);
+      element.setAttribute('src', fileUrl);
     });
 
     return el.innerHTML;

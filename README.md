@@ -1,7 +1,7 @@
 # Export to HTML for Obsidian
 This [Obsidian](https://obsidian.md) community plugin allows you to export the content of a note as HTML, either to the clipboard or to a new HTML file.
 
-During the export, images will be copied over in base 64 format.
+During the export, images and videos keep pointing to their original location on disk through an absolute `file:///` path, so the exported HTML stays small.
 
 This plugin is a work in progress but it already works great in most cases. Some edge cases with inline image exports will be improved.
 
